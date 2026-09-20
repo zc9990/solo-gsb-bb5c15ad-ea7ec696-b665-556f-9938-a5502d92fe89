@@ -1969,12 +1969,19 @@ def _delivery_view(row) -> dict[str, Any] | None:
 
 
 def _subscription_dict(conn, row) -> dict[str, Any]:
+    """订阅的统一序列化：创建/列表/详情共用。
+
+    同时给出规范字段 ``subscription_id`` 与既有 ``id``，两者值完全相同——
+    客户端从创建响应取任一字段拼入 ``/subscriptions/{subscription_id}/poll|ack``
+    都能命中同一记录，避免 create→poll 链路拼入空值或错误字段而 404。
+    """
     delivery = conn.execute(
         "SELECT * FROM subscription_deliveries WHERE subscription_id = ?",
         (row["id"],),
     ).fetchone()
     return {
         "id": row["id"],
+        "subscription_id": row["id"],
         "dag_id": row["dag_id"],
         "committed_sequence": row["committed_sequence"],
         "created_at": row["created_at"],

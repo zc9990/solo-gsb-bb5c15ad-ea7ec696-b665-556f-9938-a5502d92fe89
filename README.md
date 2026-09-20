@@ -136,7 +136,9 @@ DAG，工作器原子领取「所有前置均已成功」的任务，凭借唯�
   跨页与重启均不漏项、不重复。
 - **可靠事件订阅（投递—确认租约）**：在只读事件流之上提供 `POST /subscriptions`
   订阅，创建时保存 `committed_sequence`（默认 `0`，从头订阅），可选 `dag_id`
-  只订阅单个 DAG（过滤口径与 `GET /events?dag_id=` 一致）。`POST /subscriptions/{id}/poll`
+  只订阅单个 DAG（过滤口径与 `GET /events?dag_id=` 一致）。创建、列表与详情
+  响应统一返回规范字段 `subscription_id` 与既有 `id`（两者值完全相同），
+  可直接拼入后续 poll/ack 路径。`POST /subscriptions/{id}/poll`
   接受 `limit`（1～100，默认 50）与正数 `lease_seconds`，从 `committed_sequence`
   之后按 `sequence` 升序返回下一批事件及随机 `delivery_token`。**同一订阅同时只允许
   一个未确认批次**：租约未过期时重复 `poll` 逐字节原样回放该批次（同令牌、同事件集，
@@ -738,9 +740,13 @@ curl -s -X POST http://localhost:8000/subscriptions \
 ```
 
 ```json
-{"id": "9f2a…", "dag_id": null, "committed_sequence": 0,
+{"id": "9f2a…", "subscription_id": "9f2a…", "dag_id": null, "committed_sequence": 0,
  "created_at": "2026-09-19T10:00:00Z", "in_flight": null}
 ```
+
+创建、列表与详情响应统一携带规范字段 `subscription_id` 与既有 `id`，两者值
+完全相同——客户端从创建响应取任一字段拼入
+`/subscriptions/{subscription_id}/poll|ack` 都会命中刚创建的记录。
 
 `poll` 按 `sequence` 升序投出游标之后的下一批（`limit` 1～100，`lease_seconds`
 必须为正数），并生成随机 `delivery_token` 与租约：

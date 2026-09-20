@@ -2424,6 +2424,55 @@ def test_create_subscription_stores_cursor_and_filter(client):
     assert client.post("/subscriptions", json={"committed_sequence": -1}).status_code == 422
 
 
+def test_subscription_create_poll_ack_chain_uses_unified_identifier(client):
+    """回归：create 响应的规范字段 subscription_id 可直接用于后续 poll/ack。
+
+    先制造可投递事件，再创建订阅并立即 poll→ack；创建/列表/详情响应中的
+    subscription_id 与既有 id 必须同时存在且值完全相同，避免客户端在
+    create→poll 链路中拼入空值或错误字段导致 404。
+    """
+    _run_dag_full(client, "sub-chain-1")
+
+    r = client.post("/subscriptions", json={})
+    assert r.status_code == 201
+    created = r.json()
+    # 规范字段 subscription_id 与既有 id 同时返回且值相同
+    assert created["subscription_id"] and created["id"]
+    assert created["subscription_id"] == created["id"]
+    sid = created["subscription_id"]
+
+    # 详情与列表使用同一套标识序列化
+    detail = client.get(f"/subscriptions/{sid}").json()
+    assert detail["subscription_id"] == sid == detail["id"]
+    listed = client.get("/subscriptions").json()["subscriptions"]
+    mine = next(s for s in listed if s["subscription_id"] == sid)
+    assert mine["id"] == sid
+
+    # 立即 poll：命中刚创建的记录，拿到可投递事件与令牌
+    p = client.post(f"/subscriptions/{sid}/poll", json={"limit": 100, "lease_seconds": 30})
+    assert p.status_code == 200
+    body = p.json()
+    assert body["subscription_id"] == sid
+    assert body["events"] and body["delivery_token"]
+    assert all(e["dag_id"] == "sub-chain-1" for e in body["events"])
+
+    # 立即 ack：游标推进到该批最后一条，在途批次清空
+    r = client.post(f"/subscriptions/{sid}/ack", json={"delivery_token": body["delivery_token"]})
+    assert r.status_code == 200
+    assert r.json() == {"subscription_id": sid, "committed_sequence": body["last_sequence"]}
+    after = client.get(f"/subscriptions/{sid}").json()
+    assert after["committed_sequence"] == body["last_sequence"]
+    assert after["in_flight"] is None
+
+    # 未知订阅依旧 404 subscription_not_found
+    r = client.post("/subscriptions/does-not-exist/poll", json={"limit": 1, "lease_seconds": 30})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "subscription_not_found"
+    r = client.post("/subscriptions/does-not-exist/ack", json={"delivery_token": "x"})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "subscription_not_found"
+
+
 def test_subscription_poll_returns_next_batch_in_sequence_order(client):
     _run_dag_full(client, "sub-order-1")
     sid = client.post("/subscriptions", json={}).json()["id"]
