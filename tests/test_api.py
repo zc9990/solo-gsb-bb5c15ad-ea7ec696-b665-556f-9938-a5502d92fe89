@@ -2424,6 +2424,85 @@ def test_create_subscription_stores_cursor_and_filter(client):
     assert client.post("/subscriptions", json={"committed_sequence": -1}).status_code == 422
 
 
+def test_subscription_create_id_fields_match_and_drive_poll_ack(client):
+    """回归：创建响应同时给出 id 与规范字段 subscription_id（值完全相同），
+    客户端取任一字段拼入 poll/ack 路径都命中刚创建的记录，不再 404。"""
+    # 先制造可投递事件
+    _run_dag_full(client, "sub-idreg-1")
+
+    r = client.post("/subscriptions", json={})
+    assert r.status_code == 201
+    sub = r.json()
+    assert sub["id"] and sub["subscription_id"]
+    assert sub["id"] == sub["subscription_id"]
+
+    # 创建、列表、详情的标识序列化一致：同一条记录三个响应都双写且同值
+    detail = client.get(f"/subscriptions/{sub['subscription_id']}").json()
+    assert detail["id"] == sub["id"]
+    assert detail["subscription_id"] == sub["id"]
+    mine = next(
+        s for s in client.get("/subscriptions").json()["subscriptions"]
+        if s["id"] == sub["id"]
+    )
+    assert mine["subscription_id"] == sub["id"]
+
+    # 立即用创建响应的 subscription_id poll：命中刚创建的记录并投出事件
+    p = client.post(
+        f"/subscriptions/{sub['subscription_id']}/poll",
+        json={"limit": 50, "lease_seconds": 30},
+    )
+    assert p.status_code == 200
+    batch = p.json()
+    assert batch["subscription_id"] == sub["subscription_id"]
+    assert batch["events"] and batch["delivery_token"]
+
+    # 同一路径值 ack：游标推进到该批最后一条 sequence
+    a = client.post(
+        f"/subscriptions/{sub['subscription_id']}/ack",
+        json={"delivery_token": batch["delivery_token"]},
+    )
+    assert a.status_code == 200
+    assert a.json() == {
+        "subscription_id": sub["subscription_id"],
+        "committed_sequence": batch["last_sequence"],
+    }
+    assert client.get(f"/subscriptions/{sub['id']}").json()["committed_sequence"] == batch["last_sequence"]
+
+    # 未知订阅仍然是 subscription_not_found（语义不变）
+    for method, path in (("GET", "/subscriptions/nope"),
+                         ("POST", "/subscriptions/nope/poll"),
+                         ("POST", "/subscriptions/nope/ack")):
+        r = client.request(method, path, json={"lease_seconds": 1, "delivery_token": "x"})
+        assert r.status_code == 404
+        assert r.json()["error"]["code"] == "subscription_not_found"
+
+
+def test_subscription_identifier_serialization_consistent_across_views(client):
+    """创建/列表/详情响应的标识字段完全一致（含在途批次场景）。"""
+    _run_dag_full(client, "sub-idview-1")
+    created = client.post("/subscriptions", json={"dag_id": "sub-idview-1"}).json()
+    sid = created["subscription_id"]
+
+    # 制造在途批次后，三个视图的标识字段仍一致
+    p = client.post(f"/subscriptions/{sid}/poll", json={"limit": 1, "lease_seconds": 300}).json()
+    detail = client.get(f"/subscriptions/{sid}").json()
+    listed = next(
+        s for s in client.get("/subscriptions", params={"dag_id": "sub-idview-1"}).json()["subscriptions"]
+        if s["subscription_id"] == sid
+    )
+    for view in (created, detail, listed):
+        assert view["id"] == sid
+        assert view["subscription_id"] == sid
+    assert detail["in_flight"]["delivery_token"] == p["delivery_token"]
+    assert listed["in_flight"]["delivery_token"] == p["delivery_token"]
+
+    # 确认后视图字段依旧一致，在途槽位清空
+    client.post(f"/subscriptions/{sid}/ack", json={"delivery_token": p["delivery_token"]})
+    detail = client.get(f"/subscriptions/{sid}").json()
+    assert detail["id"] == detail["subscription_id"] == sid
+    assert detail["in_flight"] is None
+
+
 def test_subscription_poll_returns_next_batch_in_sequence_order(client):
     _run_dag_full(client, "sub-order-1")
     sid = client.post("/subscriptions", json={}).json()["id"]

@@ -738,9 +738,13 @@ curl -s -X POST http://localhost:8000/subscriptions \
 ```
 
 ```json
-{"id": "9f2a…", "dag_id": null, "committed_sequence": 0,
+{"id": "9f2a…", "subscription_id": "9f2a…", "dag_id": null, "committed_sequence": 0,
  "created_at": "2026-09-19T10:00:00Z", "in_flight": null}
 ```
+
+创建（`201`）、列表与详情响应的标识序列化完全一致：同时携带既有 `id` 与规范字段
+`subscription_id`，**两者值完全相同**，客户端取任一字段拼入
+`/subscriptions/{subscription_id}/poll` 与 `/ack` 路径都能命中同一条记录。
 
 `poll` 按 `sequence` 升序投出游标之后的下一批（`limit` 1～100，`lease_seconds`
 必须为正数），并生成随机 `delivery_token` 与租约：
@@ -982,6 +986,14 @@ pending ──claim──▶ running ──complete(success)──────�
 ```bash
 pip install -r requirements-dev.txt
 pytest -q
+```
+
+容器启动后的订阅链路回归冒烟测试（先制造可投递事件 → 创建订阅 → 立即 poll 并 ack，
+同时校验创建/列表/详情响应的 `id` 与 `subscription_id` 双写一致；仅依赖标准库）：
+
+```bash
+docker compose up --build -d          # 先启动服务
+python3 scripts/smoke_subscription.py # 默认打 http://localhost:8000，可用 BASE_URL 覆盖
 ```
 
 测试覆盖：DAG 校验（缺失依赖/环/重复键）、依赖门控、并发原子领取、

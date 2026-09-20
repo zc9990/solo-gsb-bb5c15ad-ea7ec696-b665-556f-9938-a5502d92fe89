@@ -216,7 +216,9 @@ def list_events(
     status_code=201,
     summary="创建事件订阅",
     responses={
-        201: {"description": "订阅已创建并保存 committed_sequence；可选按 dag_id 过滤"},
+        201: {"description": "订阅已创建并保存 committed_sequence；可选按 dag_id 过滤。"
+              "响应同时携带规范字段 subscription_id 与既有 id（两者值完全相同），"
+              "创建/列表/详情响应的标识序列化一致，可直接拼入 poll/ack 路径"},
     },
 )
 def create_subscription(body: SubscriptionIn) -> dict:
